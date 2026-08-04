@@ -1,0 +1,48 @@
+{
+  "name": "delegate-sd-jwt",
+  "version": "0.1.0",
+  "description": "Zero-dependency TypeScript implementation of Delegate SD-JWT (dSD-JWT) delegation chains — draft-gco-oauth-delegate-sd-jwt-00 on top of RFC 9901 SD-JWT.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "npm run build && node --test \"dist/test/*.test.js\"",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "sd-jwt",
+    "dsd-jwt",
+    "delegate-sd-jwt",
+    "kb-sd-jwt",
+    "selective-disclosure",
+    "delegation",
+    "verifiable-credentials",
+    "rfc9901",
+    "ap2",
+    "jwt"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.0"
+  }
+}

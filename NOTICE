@@ -1,0 +1,10 @@
+delegate-sd-jwt
+Copyright 2026 The delegate-sd-jwt authors
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.
+
+This software implements draft-gco-oauth-delegate-sd-jwt-00 and RFC 9901.
+Its behaviour is aligned for interoperability with the SD-JWT delegation
+chain implementation in the Google Agent Payments Protocol (AP2) Python
+SDK, which is also licensed under the Apache License, Version 2.0. No AP2
+source code is included in this work.
