@@ -324,10 +324,12 @@ test('rejects a terminal typ that delegates onward', async () => {
 });
 
 test('rejects an intermediate typ with no onward key', async () => {
+  // Checked in handoff mode, where an intermediate final hop is the expected
+  // shape — so the missing `cnf`, not the position, is what fails.
   const fixture = await buildFixture();
   const forged = await forgeHop(fixture, () => undefined, { typ: 'kb+sd-jwt+kb' }, { amount: '1.00' });
   await assert.rejects(
-    verifyForged(fixture, forged),
+    verifyForged(fixture, forged, { role: 'delegate' }),
     (error: Error) => error instanceof DelegateSdJwtError && /requires a 'cnf'/.test(error.message),
   );
 });
@@ -364,6 +366,76 @@ test('rejects a detached KB-JWT (dSD-JWT+KB is out of scope)', async () => {
     }),
     (error: Error) =>
       error instanceof DelegateSdJwtError && /detached KB-JWT/.test(error.message),
+  );
+});
+
+test('rejects a bare credential replayed as a presentation', async () => {
+  // Anyone holding a copy of the credential could otherwise replay it: with no
+  // hop, no key-binding signature exists and expectedAud/expectedNonce would
+  // have nothing to match against.
+  const fixture = await buildFixture();
+  await assert.rejects(
+    verifyChain({
+      chain: fixture.root,
+      rootVerifier: fixture.rootVerifier,
+      jwkVerifierFactory,
+      hasher,
+      expectedAud: AUD,
+      expectedNonce: PRESENTATION_NONCE,
+      currentTime: NOW + 60,
+    }),
+    (error: Error) =>
+      error instanceof DelegateSdJwtError &&
+      /must contain at least one KB-SD-JWT hop/.test(error.message),
+  );
+});
+
+test('a delegate cannot pose as the original holder', async () => {
+  const fixture = await buildFixture();
+  const rogue = await generateEcKey();
+  // The agent holds only its own key. To present the credential as the holder it
+  // would have to sign the first hop with the key named in the root's cnf.
+  const forgedFirstHop = await createKbSdJwt({
+    prevToken: fixture.root,
+    claims: { amount: '9999.00' },
+    aud: AUD,
+    nonce: PRESENTATION_NONCE,
+    alg: rogue.alg,
+    signer: rogue.signer,
+    hasher,
+    saltGenerator,
+    iat: NOW,
+  });
+  await assert.rejects(
+    verifyChain({
+      chain: serializeChain([fixture.root, forgedFirstHop]),
+      rootVerifier: fixture.rootVerifier,
+      jwkVerifierFactory,
+      hasher,
+      expectedAud: AUD,
+      expectedNonce: PRESENTATION_NONCE,
+      currentTime: NOW + 60,
+    }),
+    (error: Error) =>
+      error instanceof DelegateSdJwtError && /Signature verification failed/.test(error.message),
+  );
+});
+
+test('a delegate cannot shorten the chain to hide the delegation', async () => {
+  // Dropping the middle hop of user → agent → sub-agent → merchant breaks both
+  // the cnf walk and the binding of whatever follows.
+  const fixture = await buildFixture();
+  await assert.rejects(
+    verifyChain({
+      chain: serializeChain([fixture.root, fixture.hop2]),
+      rootVerifier: fixture.rootVerifier,
+      jwkVerifierFactory,
+      hasher,
+      expectedAud: AUD,
+      expectedNonce: PRESENTATION_NONCE,
+      currentTime: NOW + 60,
+    }),
+    (error: Error) => error instanceof DelegateSdJwtError,
   );
 });
 
@@ -463,6 +535,7 @@ async function forgeHop(
 async function verifyForged(
   fixture: Awaited<ReturnType<typeof buildFixture>>,
   forgedHop: string,
+  overrides: { role?: 'verifier' | 'delegate' } = {},
 ): Promise<{ payloads: JsonObject[] }> {
   return verifyChain({
     chain: serializeChain([fixture.root, fixture.hop1, forgedHop]),
@@ -472,5 +545,6 @@ async function verifyForged(
     expectedAud: AUD,
     expectedNonce: PRESENTATION_NONCE,
     currentTime: NOW + 60,
+    ...overrides,
   });
 }

@@ -12,6 +12,8 @@ import {
   isIntermediateTyp,
   isTerminalTyp,
   TERMINAL_TYPS,
+  TYP_INTERMEDIATE,
+  TYP_TERMINAL,
 } from './format.js';
 import { ParsedToken, parseToken } from './parse.js';
 import {
@@ -81,6 +83,15 @@ export interface VerifyKbSdJwtOptions {
    * is present. Default `true`; see {@link assertDelegateItemCount}.
    */
   requireSingleDelegateItem?: boolean;
+  /**
+   * Pin whether this hop must end the chain (draft §6, step 4: the final `typ`
+   * must match the credential format).
+   *
+   * `true` requires a terminal `typ`, `false` requires one that delegates
+   * onward, and `undefined` accepts either. Every hop before the last must
+   * delegate onward, or nothing could follow it.
+   */
+  expectTerminal?: boolean | undefined;
 }
 
 /**
@@ -122,6 +133,17 @@ export async function verifyKbSdJwt(options: VerifyKbSdJwtOptions): Promise<Veri
     throw new DelegateSdJwtError(
       `Unexpected JWT typ: expected one of ${[...TERMINAL_TYPS, ...INTERMEDIATE_TYPS].join(', ')}, ` +
         `got ${JSON.stringify(typ)}`,
+    );
+  }
+  if (options.expectTerminal === true && !isTerminalTyp(typ)) {
+    throw new DelegateSdJwtError(
+      `Expected a terminal hop (${TYP_TERMINAL}) but got ${typ}, which delegates onward. ` +
+        'A presentation to a verifier must end the chain.',
+    );
+  }
+  if (options.expectTerminal === false && !isIntermediateTyp(typ)) {
+    throw new DelegateSdJwtError(
+      `Expected a hop that delegates onward (${TYP_INTERMEDIATE}) but got ${typ}, which ends the chain`,
     );
   }
 

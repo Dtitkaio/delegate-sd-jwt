@@ -37,6 +37,7 @@ import {
   rootVerifierFor,
   saltGenerator,
   signJwt,
+  type TestKey,
 } from './helpers.js';
 
 /**
@@ -129,28 +130,39 @@ test('the verifier factory receives the cnf.jwk of the preceding hop', async () 
   assert.deepEqual(seen, [fixture.holder.publicJwk, fixture.agent.publicJwk]);
 });
 
-test('a hop handing several delegate payloads on is rejected by default and allowed opt-in', async () => {
+/** Sign a hop with a hand-built delegate_payload of several disclosed elements. */
+async function multiItemHop(
+  base: { payload: JsonObject; typ: string | null },
+  signer: TestKey,
+  items: readonly JsonObject[],
+): Promise<string> {
+  const disclosures = items.map((item) => createDisclosure(item, saltGenerator));
+  const digests = await Promise.all(
+    disclosures.map((disclosure) => computeDisclosureDigest(disclosure, DEFAULT_SD_ALG, hasher)),
+  );
+  const payload: JsonObject = {
+    ...base.payload,
+    delegate_payload: digests.map((digest) => ({ '...': digest })),
+  };
+  const jwt = await signJwt({ alg: signer.alg, typ: base.typ }, payload, signer.signer);
+  return [jwt, ...disclosures].join('~') + '~';
+}
+
+test('a handoff may pass several delegate payloads on, a presentation may not', async () => {
   const fixture = await buildFixture();
+  const nextDelegate = await generateEcKey();
   const hop2 = splitChain(fixture.chain)[2]!;
 
-  const first = createDisclosure({ amount: '1.00' }, saltGenerator);
-  const second = createDisclosure({ amount: '2.00' }, saltGenerator);
-  const payload: JsonObject = {
-    ...hop2.payload,
-    delegate_payload: [
-      { '...': await computeDisclosureDigest(first, DEFAULT_SD_ALG, hasher) },
-      { '...': await computeDisclosureDigest(second, DEFAULT_SD_ALG, hasher) },
-    ],
-  };
-  const jwt = await signJwt(
-    { alg: fixture.agent.alg, typ: hop2.typ },
-    payload,
-    fixture.agent.signer,
+  // The agent hands the grant to a further delegate, passing two payloads at
+  // once. As a handoff this is legal; as a presentation it is not.
+  const handoff = await multiItemHop(
+    { payload: hop2.payload, typ: 'kb+sd-jwt+kb' },
+    fixture.agent,
+    [{ cnf: { jwk: nextDelegate.publicJwk }, amount: '1.00' }, { amount: '2.00' }],
   );
-  const multi = [jwt, first, second].join('~') + '~';
 
   const options = {
-    chain: serializeChain([fixture.root, fixture.hop1, multi]),
+    chain: serializeChain([fixture.root, fixture.hop1, handoff]),
     rootVerifier: fixture.rootVerifier,
     jwkVerifierFactory: webcryptoJwkVerifier,
     hasher: webcryptoHasher,
@@ -159,41 +171,84 @@ test('a hop handing several delegate payloads on is rejected by default and allo
     currentTime: NOW + 60,
   };
 
+  const { payloads } = await verifyChain({ ...options, role: 'delegate' as const });
+  assert.equal(payloads.length, 4);
+
   await assert.rejects(
     verifyChain(options),
     (error: Error) =>
-      error instanceof DelegateSdJwtError &&
-      /Expected exactly 1 disclosed delegate_payload element, got 2/.test(error.message),
+      error instanceof DelegateSdJwtError && /must end the chain/.test(error.message),
   );
-
-  const { payloads } = await verifyChain({ ...options, allowMultipleFinalDelegateItems: true });
-  assert.equal(payloads.length, 4);
 });
 
 test('a non-final hop may never disclose more than one delegate payload', async () => {
   const fixture = await buildFixture();
   const hop1 = splitChain(fixture.chain)[1]!;
-  const first = createDisclosure({ cnf: { jwk: fixture.agent.publicJwk } }, saltGenerator);
-  const second = createDisclosure({ extra: true }, saltGenerator);
-  const payload: JsonObject = {
-    ...hop1.payload,
-    delegate_payload: [
-      { '...': await computeDisclosureDigest(first, DEFAULT_SD_ALG, hasher) },
-      { '...': await computeDisclosureDigest(second, DEFAULT_SD_ALG, hasher) },
-    ],
-  };
-  const jwt = await signJwt({ alg: fixture.holder.alg, typ: hop1.typ }, payload, fixture.holder.signer);
+  const forged = await multiItemHop({ payload: hop1.payload, typ: hop1.typ }, fixture.holder, [
+    { cnf: { jwk: fixture.agent.publicJwk } },
+    { extra: true },
+  ]);
   await assert.rejects(
     verifyChain({
-      chain: serializeChain([fixture.root, [jwt, first, second].join('~') + '~', fixture.hop2]),
+      chain: serializeChain([fixture.root, forged, fixture.hop2]),
       rootVerifier: fixture.rootVerifier,
       jwkVerifierFactory: webcryptoJwkVerifier,
       hasher,
       currentTime: NOW + 60,
-      allowMultipleFinalDelegateItems: true,
     }),
     (error: Error) =>
       error instanceof DelegateSdJwtError && /Expected exactly 1 disclosed/.test(error.message),
+  );
+});
+
+test('a verifier rejects an intermediate hop replayed as a presentation', async () => {
+  // The agent holds a grant meant to be handed to a sub-agent. It cannot present
+  // that grant to the merchant as if it were its own presentation.
+  const fixture = await buildFixture();
+  const subAgent = await generateEcKey();
+  const handoff = await createKbSdJwt({
+    prevToken: fixture.hop1,
+    claims: { cnf: { jwk: subAgent.publicJwk }, amount: '12.00' },
+    aud: AUD,
+    nonce: PRESENTATION_NONCE,
+    alg: fixture.agent.alg,
+    signer: fixture.agent.signer,
+    hasher,
+    saltGenerator,
+    iat: NOW,
+  });
+  const options = {
+    chain: serializeChain([fixture.root, fixture.hop1, handoff]),
+    rootVerifier: fixture.rootVerifier,
+    jwkVerifierFactory: webcryptoJwkVerifier,
+    hasher,
+    expectedAud: AUD,
+    expectedNonce: PRESENTATION_NONCE,
+    currentTime: NOW + 60,
+  };
+  await assert.rejects(
+    verifyChain(options),
+    (error: Error) =>
+      error instanceof DelegateSdJwtError && /must end the chain/.test(error.message),
+  );
+  // The sub-agent it was addressed to accepts it as a handoff.
+  const { tokens } = await verifyChain({ ...options, role: 'delegate' });
+  assert.deepEqual(tokens[2]?.cnfJwk(), subAgent.publicJwk);
+});
+
+test('a delegate rejects a terminal hop offered as a handoff', async () => {
+  const fixture = await buildFixture();
+  await assert.rejects(
+    verifyChain({
+      chain: fixture.chain,
+      rootVerifier: fixture.rootVerifier,
+      jwkVerifierFactory: webcryptoJwkVerifier,
+      hasher,
+      currentTime: NOW + 60,
+      role: 'delegate',
+    }),
+    (error: Error) =>
+      error instanceof DelegateSdJwtError && /which ends the chain/.test(error.message),
   );
 });
 

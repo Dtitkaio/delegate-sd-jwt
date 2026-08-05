@@ -93,14 +93,20 @@ export interface VerifyChainOptions {
   /** Seconds since the epoch to evaluate time claims against. Default: now. */
   currentTime?: number;
   /**
-   * Allow the *final* hop to disclose more than one `delegate_payload` element.
-   * Non-final hops are always limited to exactly one.
+   * Who is verifying, which decides what the *last* token must look like.
    *
-   * Default `false`, the verifier's rule: a presentation discloses exactly one
-   * element (draft §6). Set it to `true` only when the caller is a delegate
-   * receiving a handoff, where several elements may be passed on at once.
+   * - `'verifier'` (default) — the caller is consuming a presentation. The
+   *   chain must end here: the last hop must be terminal (`kb+sd-jwt`, no
+   *   `cnf`) and must disclose exactly one `delegate_payload` element.
+   * - `'delegate'` — the caller is a delegate receiving a handoff. The last hop
+   *   must instead delegate onward (`kb+sd-jwt+kb`), naming the caller's own
+   *   key, and may disclose several elements at once.
+   *
+   * Getting this wrong is what lets a delegation grant be replayed as if it
+   * were a presentation, so it is an explicit choice rather than a default that
+   * accepts both.
    */
-  allowMultipleFinalDelegateItems?: boolean;
+  role?: 'verifier' | 'delegate';
 }
 
 export interface VerifiedChain {
@@ -129,6 +135,15 @@ export async function verifyChain(options: VerifyChainOptions): Promise<Verified
   const tokens = splitChain(options.chain);
   if (tokens.length === 0) {
     throw new DelegateSdJwtError('Chain contains no tokens');
+  }
+  if (tokens.length < 2) {
+    // A bare SD-JWT is an issuance form, not a presentation: nobody has signed
+    // anything with the key named in `cnf`, so nothing proves possession and
+    // `expectedAud` / `expectedNonce` would have nothing to match against.
+    throw new DelegateSdJwtError(
+      'A dSD-JWT must contain at least one KB-SD-JWT hop; a bare SD-JWT carries no proof ' +
+        'of possession. Use verifySdJwt to validate a credential you already hold.',
+    );
   }
   const detached = tokens.findIndex((token) => token.kbJwt !== null);
   if (detached !== -1) {
@@ -160,6 +175,7 @@ export async function verifyChain(options: VerifyChainOptions): Promise<Verified
     ...(verifiedRoot.delegateItems.length > 0 ? verifiedRoot.delegateItems : [verifiedRoot.payload]),
   );
 
+  const asVerifier = (options.role ?? 'verifier') === 'verifier';
   for (let i = 1; i < tokens.length; i++) {
     const isLast = i === tokens.length - 1;
     let verified;
@@ -171,7 +187,10 @@ export async function verifyChain(options: VerifyChainOptions): Promise<Verified
         hasher: options.hasher,
         expectedAud: isLast ? options.expectedAud : undefined,
         expectedNonce: isLast ? options.expectedNonce : undefined,
-        requireSingleDelegateItem: !isLast || !(options.allowMultipleFinalDelegateItems ?? false),
+        // Every hop before the last must delegate onward. The last must end the
+        // chain for a verifier, or name the receiving delegate for a handoff.
+        expectTerminal: isLast ? asVerifier : false,
+        requireSingleDelegateItem: !isLast || asVerifier,
       });
     } catch (cause) {
       throw contextualize(`Chain token ${i}`, cause);

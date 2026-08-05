@@ -162,14 +162,41 @@ Legacy `typ` aliases `kb-sd-jwt` and `kb-sd-jwt+kb` are accepted when verifying.
 - an `_sd_alg` other than `sha-256`, `sha-384`, `sha-512`
 - both binding claims present, neither present, or one that does not match the previous token
 - a hop that is not signed by the previous hop's `cnf.jwk`
+- a bare credential with no hop at all, which proves possession of nothing (use `verifySdJwt`
+  for a credential you already hold)
 - a missing `iat`; a mismatched `aud` / `nonce` on the final hop
 - `exp` in the past or `iat` in the future (configurable skew, default 300 s), including
   inside a disclosed delegate payload
 - a terminal `typ` that delegates onward, or an intermediate `typ` that does not
-- anything other than exactly one disclosed `delegate_payload` element, unless
-  `allowMultipleFinalDelegateItems` is set for a delegate-to-delegate handoff
+- a chain that does not end where the caller sits — see `role` below
+- anything other than exactly one disclosed `delegate_payload` element, except on the
+  last hop of a `role: 'delegate'` handoff
 
-Two properties worth calling out:
+### The chain must end where you sit
+
+A verifier is not a link in the chain. It signs nothing and no `cnf` names it — it is the
+`aud` of the last hop. So a presentation's last hop is *terminal*: it ends the chain, and the
+verifier cannot pass it on.
+
+That makes `role` a security control, not a convenience:
+
+```ts
+await verifyChain({ chain, /* … */ });                   // role: 'verifier' (default)
+await verifyChain({ chain, /* … */, role: 'delegate' }); // receiving a handoff
+```
+
+- **`'verifier'`** — the last hop must be `kb+sd-jwt` with no `cnf`.
+- **`'delegate'`** — the last hop must be `kb+sd-jwt+kb`, naming the receiving delegate's key.
+
+Without this, an agent holding a grant addressed to a *sub-agent* could present that grant
+directly to a verifier, which would read the delegation payload as though it were a
+presentation. There is a test for exactly that replay.
+
+The last hop is minted per interaction, not stored: from one `root ~~ grant` prefix an agent
+can build a terminal hop for merchant A, a different one for merchant B, or an intermediate hop
+for a sub-agent. Only the prefix is retained.
+
+Two further properties worth calling out:
 
 **The binding is checked in both directions.** A hop's `sd_hash` must match the token it
 delegates, and every hop in the chain is checked. Skipping either half lets a delegate splice
@@ -187,9 +214,14 @@ expired `exp` values.
 
 ## Not implemented
 
-- **dSD-JWT+KB** — a chain with a detached trailing KB-JWT. Such a chain is *rejected* rather
-  than silently accepted with an unverified final token. AP2 does not use this variant; key
-  binding is built into the terminal KB-SD-JWT.
+- **dSD-JWT+KB** — a chain whose final party proves key possession with a *detached* KB-JWT
+  appended after the last hop, instead of by signing a hop of its own. Such a chain is
+  *rejected* rather than silently accepted with an unverified final token. AP2 does not use
+  this variant; key binding is built into the terminal KB-SD-JWT.
+
+  This is not a limit on chain length. Delegation depth is unbounded in both variants — a
+  chain may have any number of `kb+sd-jwt+kb` hops, each naming the next delegate's key, and
+  there is a test covering user → agent → sub-agent → merchant.
 - **OpenID4VP `transaction_data` transport** (draft §7.1) — the `transaction_type: "delegate"`
   entries belong in the presentation layer, not here.
 - **Per-field selective disclosure inside a delegate payload.** `createKbSdJwt` discloses the
