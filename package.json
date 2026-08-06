@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Zero-dependency TypeScript implementation of Delegate SD-JWT (dSD-JWT) delegation chains — draft-gco-oauth-delegate-sd-jwt-00 on top of RFC 9901 SD-JWT.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dtitkaio/delegate-sd-jwt.git"
+  },
+  "homepage": "https://github.com/Dtitkaio/delegate-sd-jwt#readme",
+  "bugs": {
+    "url": "https://github.com/Dtitkaio/delegate-sd-jwt/issues"
+  },
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
